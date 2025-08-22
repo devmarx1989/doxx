@@ -1,5 +1,5 @@
 {
-  description = "doxx: Terminal .docx viewer (naersk build with modern Rust)";
+  description = "doxx: Terminal .docx viewer (naersk + modern Rust)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
@@ -8,53 +8,44 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-    naersk,
-    rust-overlay,
-  }:
-    flake-utils.lib.eachDefaultSystem (
-      system: let
-        overlays = [(import rust-overlay)];
-        pkgs = import nixpkgs {inherit system overlays;};
+  outputs = { self, nixpkgs, flake-utils, naersk, rust-overlay }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
 
-        # Use a modern toolchain that includes std for the host target.
+        # Use a full toolchain (includes std for host target).
         # To pin: pkgs.rust-bin.stable."1.81.0".default
         toolchain = pkgs.rust-bin.stable.latest.default;
 
+        # Tell naersk to use this toolchain for both cargo & rustc.
         naerskLib = naersk.lib.${system}.override {
-          cargo = toolchain.cargo;
-          rustc = toolchain.rustc;
+          cargo = toolchain;
+          rustc = toolchain;
         };
 
-        nativeBuildInputs = [pkgs.pkg-config];
+        nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [
           # Add system libraries here if your crates require them, e.g.:
           # pkgs.openssl pkgs.zlib pkgs.xorg.libX11 pkgs.wayland pkgs.libxkbcommon
         ];
-      in rec {
+      in
+      rec {
         packages.default = naerskLib.buildPackage {
           pname = "doxx";
           src = ./.;
 
           inherit nativeBuildInputs buildInputs;
 
-          # naersk already builds with --release
+          # naersk already builds with --release; do not add it again.
           doCheck = false;
-
-          # Optional: smaller binaries; uncomment if desired
-          # RUSTFLAGS = "-C strip=symbols";
-          # CARGO_PROFILE_RELEASE_LTO = "thin";
-          # CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
 
           meta = with pkgs.lib; {
             description = "Terminal document viewer for .docx files";
             homepage = "https://github.com/bgreenwell/doxx";
             license = licenses.mit;
             mainProgram = "doxx";
-            maintainers = [];
+            maintainers = [ ];
             platforms = platforms.linux;
           };
         };
@@ -67,17 +58,12 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.pkg-config
-            toolchain.cargo
-            toolchain.rustc
-            toolchain.clippy
-            toolchain.rustfmt
+            toolchain  # provides cargo, rustc, clippy, rustfmt
           ];
           buildInputs = buildInputs;
-
-          shellHook = ''
-            echo "→ devShell ready. Try: cargo build --release"
-          '';
+          shellHook = ''echo "→ devShell ready. Try: cargo build --release" '';
         };
       }
     );
 }
+

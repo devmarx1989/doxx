@@ -17,32 +17,27 @@
       system: let
         pkgs = import nixpkgs {inherit system;};
 
-        # naersk with the toolchain we want.
+        # Use naersk with the nixpkgs toolchain
         naerskLib = naersk.lib.${system}.override {
           cargo = pkgs.cargo;
           rustc = pkgs.rustc;
         };
 
-        # Common native/system deps (kept minimal; adjust if you add crates that need more)
         nativeBuildInputs = [pkgs.pkg-config];
         buildInputs = [
-          # Add libs here if you later pull in crates that need them, e.g.:
-          # pkgs.openssl
-          # pkgs.zlib
-          # pkgs.libxkbcommon
-          # pkgs.wayland
+          # Add system libs here if you pull in crates that need them, e.g.:
+          # pkgs.openssl pkgs.zlib pkgs.libxkbcommon pkgs.wayland
         ];
       in rec {
         packages.default = naerskLib.buildPackage {
           pname = "doxx";
-          # Version is taken from Cargo.toml by naersk; you can also pin it:
-          # version = "0.1.0";
           src = ./.;
 
           inherit nativeBuildInputs buildInputs;
 
-          # Helpful for smaller binaries in release builds
-          cargoBuildOptions = x: x ++ ["--release"];
+          # naersk builds in --release by default; don't add it again.
+          # cargoBuildOptions = x: x ++ [ "--release" ];
+
           doCheck = false;
 
           meta = with pkgs.lib; {
@@ -55,13 +50,11 @@
           };
         };
 
-        # `nix run` convenience
         apps.default = {
           type = "app";
           program = "${packages.default}/bin/doxx";
         };
 
-        # Dev shell with a basic Rust toolchain and common helpers
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.pkg-config

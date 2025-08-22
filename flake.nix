@@ -20,11 +20,11 @@
         overlays = [(import rust-overlay)];
         pkgs = import nixpkgs {inherit system overlays;};
 
-        # Use a full toolchain (includes std for host target).
-        # To pin: pkgs.rust-bin.stable."1.81.0".default
+        # Modern toolchain that includes std for host target.
+        # To pin instead of tracking latest: pkgs.rust-bin.stable."1.81.0".default
         toolchain = pkgs.rust-bin.stable.latest.default;
 
-        # Tell naersk to use this toolchain for both cargo & rustc.
+        # Hand the toolchain to naersk (single derivation provides cargo+rustc)
         naerskLib = naersk.lib.${system}.override {
           cargo = toolchain;
           rustc = toolchain;
@@ -32,7 +32,7 @@
 
         nativeBuildInputs = [pkgs.pkg-config];
         buildInputs = [
-          # Add system libraries here if your crates require them, e.g.:
+          # Add system libs here if needed by your crates, e.g.:
           # pkgs.openssl pkgs.zlib pkgs.xorg.libX11 pkgs.wayland pkgs.libxkbcommon
         ];
       in rec {
@@ -42,11 +42,16 @@
 
           inherit nativeBuildInputs buildInputs;
 
-          # naersk already builds with --release; do not add it again.
+          # naersk already builds release by default
           doCheck = false;
 
+          # (Optional) smaller release binaries — uncomment if you like
+          # RUSTFLAGS = "-C strip=symbols";
+          # CARGO_PROFILE_RELEASE_LTO = "thin";
+          # CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
+
           meta = with pkgs.lib; {
-            description = "Terminal document viewer for .docx files";
+            description = "Beautiful .docx viewing in your terminal";
             homepage = "https://github.com/bgreenwell/doxx";
             license = licenses.mit;
             mainProgram = "doxx";
@@ -66,7 +71,15 @@
             toolchain # provides cargo, rustc, clippy, rustfmt
           ];
           buildInputs = buildInputs;
-          shellHook = ''echo "→ devShell ready. Try: cargo build --release" '';
+
+          shellHook = ''
+            echo "→ devShell ready. Try: cargo build --release"
+          '';
+        };
+
+        # ── Overlay so others can consume this as pkgs.doxx ─────────────────────
+        overlays.default = final: prev: {
+          doxx = self.packages.${final.system}.default;
         };
       }
     );

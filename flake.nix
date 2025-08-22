@@ -1,10 +1,12 @@
 {
-  description = "doxx: Terminal .docx viewer (built with naersk)";
+  description = "doxx: Terminal .docx viewer (naersk build)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
     naersk.url = "github:nmattia/naersk";
+    # New: modern Rust toolchains
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
   outputs = {
@@ -12,21 +14,26 @@
     nixpkgs,
     flake-utils,
     naersk,
+    rust-overlay,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        pkgs = import nixpkgs {inherit system;};
+        overlays = [(import rust-overlay)];
+        pkgs = import nixpkgs {inherit system overlays;};
 
-        # Use naersk with the nixpkgs toolchain
+        # Latest stable Rust/Cargo from rust-overlay (new enough for Cargo.lock v4)
+        toolchain = pkgs.rust-bin.stable.latest;
+
+        # Tell naersk to use that toolchain
         naerskLib = naersk.lib.${system}.override {
-          cargo = pkgs.cargo;
-          rustc = pkgs.rustc;
+          cargo = toolchain.cargo;
+          rustc = toolchain.rustc;
         };
 
         nativeBuildInputs = [pkgs.pkg-config];
         buildInputs = [
-          # Add system libs here if you pull in crates that need them, e.g.:
-          # pkgs.openssl pkgs.zlib pkgs.libxkbcommon pkgs.wayland
+          # Add system libs if your crates need them, e.g.:
+          # pkgs.openssl pkgs.zlib pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11
         ];
       in rec {
         packages.default = naerskLib.buildPackage {
@@ -35,9 +42,7 @@
 
           inherit nativeBuildInputs buildInputs;
 
-          # naersk builds in --release by default; don't add it again.
-          # cargoBuildOptions = x: x ++ [ "--release" ];
-
+          # naersk passes --release itself; do not add it again.
           doCheck = false;
 
           meta = with pkgs.lib; {
@@ -58,15 +63,13 @@
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.pkg-config
-            pkgs.cargo
-            pkgs.rustc
-            pkgs.clippy
-            pkgs.rustfmt
+            toolchain.cargo
+            toolchain.rustc
+            toolchain.clippy
+            toolchain.rustfmt
           ];
           buildInputs = buildInputs;
-          shellHook = ''
-            echo "→ devShell ready. Try: cargo build --release"
-          '';
+          shellHook = ''echo "→ devShell ready. try: cargo build --release" '';
         };
       }
     );

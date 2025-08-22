@@ -1,11 +1,10 @@
 {
-  description = "doxx: Terminal .docx viewer (naersk build)";
+  description = "doxx: Terminal .docx viewer (naersk build with modern Rust)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     flake-utils.url = "github:numtide/flake-utils";
     naersk.url = "github:nmattia/naersk";
-    # New: modern Rust toolchains
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
@@ -21,10 +20,10 @@
         overlays = [(import rust-overlay)];
         pkgs = import nixpkgs {inherit system overlays;};
 
-        # Latest stable Rust/Cargo from rust-overlay (new enough for Cargo.lock v4)
-        toolchain = pkgs.rust-bin.stable.latest;
+        # Use a modern toolchain that includes std for the host target.
+        # To pin: pkgs.rust-bin.stable."1.81.0".default
+        toolchain = pkgs.rust-bin.stable.latest.default;
 
-        # Tell naersk to use that toolchain
         naerskLib = naersk.lib.${system}.override {
           cargo = toolchain.cargo;
           rustc = toolchain.rustc;
@@ -32,8 +31,8 @@
 
         nativeBuildInputs = [pkgs.pkg-config];
         buildInputs = [
-          # Add system libs if your crates need them, e.g.:
-          # pkgs.openssl pkgs.zlib pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11
+          # Add system libraries here if your crates require them, e.g.:
+          # pkgs.openssl pkgs.zlib pkgs.xorg.libX11 pkgs.wayland pkgs.libxkbcommon
         ];
       in rec {
         packages.default = naerskLib.buildPackage {
@@ -42,8 +41,13 @@
 
           inherit nativeBuildInputs buildInputs;
 
-          # naersk passes --release itself; do not add it again.
+          # naersk already builds with --release
           doCheck = false;
+
+          # Optional: smaller binaries; uncomment if desired
+          # RUSTFLAGS = "-C strip=symbols";
+          # CARGO_PROFILE_RELEASE_LTO = "thin";
+          # CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
 
           meta = with pkgs.lib; {
             description = "Terminal document viewer for .docx files";
@@ -69,7 +73,10 @@
             toolchain.rustfmt
           ];
           buildInputs = buildInputs;
-          shellHook = ''echo "→ devShell ready. try: cargo build --release" '';
+
+          shellHook = ''
+            echo "→ devShell ready. Try: cargo build --release"
+          '';
         };
       }
     );

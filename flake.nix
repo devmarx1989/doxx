@@ -3,157 +3,158 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    naersk.url = "github:nix-community/naersk";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs {
-          inherit system overlays;
-        };
+  outputs = {
+    self,
+    nixpkgs,
+    flake-utils,
+    rust-overlay,
+    naersk,
+  }:
+    flake-utils.lib.eachDefaultSystem (
+      system: let
+        overlays = [(import rust-overlay)];
+        pkgs = import nixpkgs {inherit system overlays;};
+        lib = pkgs.lib;
+        L = pkgs.lib.licenses;
 
-        # Use the latest stable Rust toolchain
+        # Toolchain (stable) with extras
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "clippy" "rustfmt" ];
+          extensions = ["rust-src" "clippy" "rustfmt"];
         };
 
-        # Define the package
-        doxx = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "doxx";
-          version = "0.1.1";
-
-          src = pkgs.fetchFromGitHub {
-            owner = "bgreenwell";
-            repo = "doxx";
-            rev = "v0.1.1";
-            sha256 = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          };
-
-          cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-
-          # Native build inputs (build-time dependencies)
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            rustToolchain
-          ];
-
-          # Runtime dependencies based on Cargo.toml
-          buildInputs = with pkgs; [
-            # For crossterm terminal manipulation
-            # For arboard clipboard functionality
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
-            
-            # SSL/TLS support for potential future reqwest usage
-            openssl
-            
-            # Standard build essentials
-            stdenv.cc.cc.lib
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            # macOS specific dependencies
-            pkgs.darwin.apple_sdk.frameworks.Security
-            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-            pkgs.darwin.apple_sdk.frameworks.AppKit # For clipboard support
-            pkgs.darwin.apple_sdk.frameworks.Cocoa
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            # Linux specific for clipboard
-            xorg.libxcb
-            wayland
-            libxkbcommon
-          ];
-
-          # Environment variables
-          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-          OPENSSL_DIR = "${pkgs.openssl.dev}";
-          OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
-          OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
-          
-          # Disable network access during build (standard for Nix)
-          doCheck = false;
-
-          meta = with pkgs.lib; {
-            description = "Expose the contents of .docx files without leaving your terminal. Fast, safe, and smart — no Office required!";
-            homepage = "https://github.com/bgreenwell/doxx";
-            license = licenses.mit;
-            maintainers = [ ]; # Add maintainer info if desired
-            platforms = platforms.all;
-          };
+        # Naersk wired to our toolchain
+        naerskLib = naersk.lib.${system}.override {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
 
-      in
-      {
-        # Default package
+        # Read package info from local Cargo.toml (avoids duplication)
+        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        pname = cargoToml.package.name or "doxx";
+        version = cargoToml.package.version or "0.0.0";
+        description =
+          if cargoToml.package ? description
+          then cargoToml.package.description
+          else "Expose the contents of .docx files without leaving your terminal";
+
+        # SPDX → nix license mapper (covers common cases, supports OR/AND)
+        # If we cannot map, we return null, and omit meta.license.
+        spdxToAttr = s: let
+          m = {
+            "MIT" = L.mit;
+            "Apache-2.0" = L.asl20;
+            "BSD-3-Clause" = L.bsd3;
+            "BSD-2-Clause" = L.bsd2;
+            "MPL-2.0" = L.mpl20;
+            "ISC" = L.isc;
+            "Unlicense" = L.unlicense;
+            "GPL-3.0-only" = L.gpl3Only;
+            "GPL-3.0-or-later" = L.gpl3Plus;
+            "LGPL-3.0-only" = L.lgpl3Only;
+            "LGPL-3.0-or-later" = L.lgpl3Plus;
+            "CC0-1.0" = L.cc0;
+          };
+        in
+          if m ? ${s}
+          then m.${s}
+          else null;
+
+        parseLicenseString = s: let
+          # remove simple parentheses
+          cleaned = lib.strings.replaceStrings ["(" ")"] ["" ""] s;
+          # split on OR/AND (both supported)
+          ors = lib.strings.splitString " OR " cleaned;
+          parts = lib.concatMap (p: lib.strings.splitString " AND " p) ors;
+          mapped = lib.filter (x: x != null) (map spdxToAttr parts);
+        in
+          if mapped == []
+          then null
+          else if lib.length mapped == 1
+          then builtins.elemAt mapped 0
+          else mapped;
+
+        licenseAttr =
+          if cargoToml.package ? license
+          then parseLicenseString cargoToml.package.license
+          else null;
+
+        # Build local checkout by default
+        src = ./.;
+
+        doxx = naerskLib.buildPackage {
+          inherit pname version src;
+
+          nativeBuildInputs = [pkgs.pkg-config];
+
+          # Keep runtime deps minimal; add/remove as your crate needs.
+          buildInputs =
+            lib.optionals pkgs.stdenv.isLinux [pkgs.xorg.libX11]
+            ++ lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+              pkgs.darwin.apple_sdk.frameworks.AppKit
+              pkgs.darwin.apple_sdk.frameworks.Cocoa
+            ];
+
+          # If you actually link native-tls/OpenSSL, uncomment:
+          # OPENSSL_DIR = "${pkgs.openssl.dev}";
+          # OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
+          # OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
+
+          meta =
+            (with lib; {
+              inherit description;
+              homepage = cargoToml.package.homepage or "https://github.com/bgreenwell/doxx";
+              platforms = platforms.linux ++ platforms.darwin;
+              mainProgram = pname;
+            })
+            // lib.optionalAttrs (licenseAttr != null) {license = licenseAttr;};
+        };
+      in rec {
         packages.default = doxx;
-        packages.doxx = doxx;
+        packages.${pname} = doxx;
 
-        # Development shell
+        apps.default = {
+          type = "app";
+          program = "${doxx}/bin/${pname}";
+        };
+
+        # Dev shell w/ your detailed welcome banner
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            # Rust toolchain
-            rustToolchain
-            
-            # Development tools
-            cargo-watch
-            cargo-edit
-            cargo-audit
-            cargo-deny
-            cargo-outdated
-            cargo-expand # For macro expansion debugging
-            
-            # Build dependencies
-            pkg-config
-            openssl
-            
-            # Terminal and clipboard dependencies for development
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXrandr
-            xorg.libXi
-            
-            # Additional development tools
-            git
-            just # task runner (optional)
-            
-            # LSP and formatting tools
-            rust-analyzer
-            
-            # For testing .docx files and document creation
-            pandoc
-            libreoffice # for creating test .docx files
-            
-            # Debugging tools
-            gdb
-            valgrind
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            # macOS specific
-            pkgs.darwin.apple_sdk.frameworks.Security
-            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-            pkgs.darwin.apple_sdk.frameworks.AppKit
-            pkgs.darwin.apple_sdk.frameworks.Cocoa
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            # Linux specific
-            xorg.libxcb
-            wayland
-            libxkbcommon
-          ];
+          buildInputs = with pkgs;
+            [
+              rustToolchain
+              rust-analyzer
+              pkg-config
+              git
+              cargo-watch
+              cargo-edit
+              cargo-audit
+              cargo-deny
+              cargo-outdated
+              cargo-expand
+              gdb
+              valgrind
+              pandoc
+              libreoffice
+            ]
+            ++ lib.optionals pkgs.stdenv.isLinux [pkgs.xorg.libX11]
+            ++ lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+              pkgs.darwin.apple_sdk.frameworks.AppKit
+              pkgs.darwin.apple_sdk.frameworks.Cocoa
+            ];
 
-          # Environment variables
-          PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
-          OPENSSL_DIR = "${pkgs.openssl.dev}";
-          OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
-          OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
-          
-          # For better terminal support
           TERM = "xterm-256color";
-          
-          # Development shell hook
+
           shellHook = ''
             echo "❄️ Welcome to the doxx Nix development environment!"
             echo ""
@@ -188,33 +189,27 @@
           '';
         };
 
-        # Apps for easy running
-        apps.default = {
-          type = "app";
-          program = "${doxx}/bin/doxx";
-        };
-
-        # Checks for CI
+        # Simple checks using same src
         checks = {
-          build = doxx;
-          
-          # Add format check
-          fmt-check = pkgs.runCommand "fmt-check" {
-            buildInputs = [ rustToolchain ];
-          } ''
-            cd ${self}
+          build = packages.default;
+
+          fmt-check = pkgs.runCommand "fmt-check" {buildInputs = [rustToolchain];} ''
+            cp -r ${src} src
+            chmod -R u+w src
+            cd src
             cargo fmt --all -- --check
             touch $out
           '';
 
-          # Add clippy check
-          clippy-check = pkgs.runCommand "clippy-check" {
-            buildInputs = [ rustToolchain ];
-          } ''
-            cd ${self}
+          clippy-check = pkgs.runCommand "clippy-check" {buildInputs = [rustToolchain];} ''
+            cp -r ${src} src
+            chmod -R u+w src
+            cd src
             cargo clippy --all-targets --all-features -- -D warnings
             touch $out
           '';
         };
-      });
+      }
+    );
 }
+>>>>>>> flakify
